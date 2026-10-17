@@ -111,6 +111,22 @@ class ModelAdapter:
 
     @staticmethod
     async def _stream_sglang(messages: list[dict[str, str]]) -> AsyncGenerator[str, None]:
+        # Quick check if SGLang is currently live or switching
+        status_url = "http://127.0.0.1:8080/admin/status"
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                res = await client.get(status_url)
+                if res.status_code == 200:
+                    status_data = res.json()
+                    live = status_data.get("live")
+                    switching = status_data.get("switching")
+                    if switching:
+                        yield f"[SGLang model '{switching}' is currently warming up into GPU VRAM (elapsed: {status_data.get('elapsed')}s). Please wait a moment...]\n\n"
+                    elif live is None:
+                        yield f"[Notice: SGLang models on Spark are currently cold / idle. You can pre-warm '{settings.sglang_model}' using `llm-warmup` in your terminal, or toggle ARCHER_MODEL_PROVIDER=local-ollama in .env for immediate local responses with Gemma 4.]\n\n"
+        except Exception:
+            pass
+
         url = f"{settings.sglang_base_url}/chat/completions"
         payload = {
             "model": settings.sglang_model,
@@ -121,7 +137,7 @@ class ModelAdapter:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 async with client.stream("POST", url, json=payload) as response:
                     if response.status_code != 200:
-                        yield f"[SGLang Error: status {response.status_code}]"
+                        yield f"[SGLang status {response.status_code}: backend not ready. Run `llm-warmup {settings.sglang_model}` or use Ollama.]"
                         return
                     async for line in response.aiter_lines():
                         if line.startswith("data: "):
