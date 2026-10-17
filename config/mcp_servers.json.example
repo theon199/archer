@@ -1,0 +1,35 @@
+{
+  "mcpServers": {
+    "semble": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "semble[mcp]==0.7.0",
+        "semble"
+      ],
+      "type": "stdio",
+      "description": "Token-efficient hybrid AST semantic and lexical codebase search engine"
+    },
+    "github": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "YOUR_GITHUB_TOKEN"
+      },
+      "type": "stdio",
+      "description": "GitHub integration for repositories, pull requests, issues, and commits"
+    },
+    "context7": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@upstash/context7-mcp"
+      ],
+      "type": "stdio",
+      "description": "Real-time, version-specific library documentation and verified code snippets"
+    }
+  }
+}

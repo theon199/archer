@@ -70,3 +70,6 @@ dist-ssr/
 # Logs
 logs/
 *.log
+
+# Local MCP server configs with credentials
+config/mcp_servers.json
