@@ -30,6 +30,35 @@
       ],
       "type": "stdio",
       "description": "Real-time, version-specific library documentation and verified code snippets"
+    },
+    "sqlite": {
+      "command": "uvx",
+      "args": [
+        "--with",
+        "mcp<1.2.0",
+        "mcp-server-sqlite",
+        "--db-path",
+        "./data/archer.db"
+      ],
+      "type": "stdio",
+      "description": "Direct inspection and queries for Archer local SQLite database"
+    },
+    "fetch": {
+      "command": "uvx",
+      "args": [
+        "mcp-server-fetch"
+      ],
+      "type": "stdio",
+      "description": "Converts arbitrary web pages to clean markdown"
+    },
+    "sequential-thinking": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking"
+      ],
+      "type": "stdio",
+      "description": "Structured multi-step reasoning and hypothesis verification"
     }
   }
 }
