@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-2.5-flash"
     openai_api_key: str = ""
     openai_model: str = "gpt-4o"
+    deepseek_api_key: str = ""
+    deepseek_model: str = "deepseek-chat"
 
     # Plugins
     brave_search_api_key: str = ""

@@ -26,6 +26,7 @@ class ModelAdapter:
                 "anthropic": bool(settings.anthropic_api_key),
                 "gemini": bool(settings.gemini_api_key),
                 "openai": bool(settings.openai_api_key),
+                "deepseek": bool(settings.deepseek_api_key),
             },
         }
 
@@ -75,6 +76,9 @@ class ModelAdapter:
                 yield token
         elif selected_provider == "local-sglang":
             async for token in ModelAdapter._stream_sglang(formatted_messages):
+                yield token
+        elif selected_provider == "deepseek":
+            async for token in ModelAdapter._stream_deepseek(formatted_messages):
                 yield token
         else:
             # Fallback mock/simulated generator if offline or during testing
@@ -153,3 +157,46 @@ class ModelAdapter:
         except Exception as e:
             logger.error(f"Error streaming from SGLang: {e}")
             yield f"[Archer SGLang Connection Error: {e}]"
+
+    @staticmethod
+    async def _stream_deepseek(messages: list[dict[str, str]]) -> AsyncGenerator[str, None]:
+        if not settings.deepseek_api_key:
+            yield "[DeepSeek Error: DEEPSEEK_API_KEY is not configured in .env]"
+            return
+
+        url = "https://api.deepseek.com/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {settings.deepseek_api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": settings.deepseek_model,
+            "messages": messages,
+            "stream": True,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                async with client.stream("POST", url, headers=headers, json=payload) as response:
+                    if response.status_code != 200:
+                        err_text = await response.aread()
+                        yield f"[DeepSeek API Error: status {response.status_code} - {err_text.decode('utf-8', errors='ignore')}]"
+                        return
+                    async for line in response.aiter_lines():
+                        if line.startswith("data: "):
+                            raw = line[6:].strip()
+                            if raw == "[DONE]":
+                                break
+                            data = json.loads(raw)
+                            choices = data.get("choices", [])
+                            if choices and "delta" in choices[0]:
+                                delta = choices[0]["delta"]
+                                # Support reasoning_content for DeepSeek-R1
+                                reason = delta.get("reasoning_content", "")
+                                content = delta.get("content", "")
+                                if reason:
+                                    yield reason
+                                if content:
+                                    yield content
+        except Exception as e:
+            logger.error(f"Error streaming from DeepSeek: {e}")
+            yield f"[Archer DeepSeek Connection Error: {e}]"
