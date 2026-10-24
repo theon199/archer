@@ -327,32 +327,50 @@ def initialize(args):
                                        "next_attempt": 0, "failures": 0})
 
 
+def unit_word(value):
+    """Quote a word for systemd's ExecStart/Environment parser."""
+    value = str(value)
+    if any(c in value for c in "\r\n\0"):
+        raise NotReady("Systemd command arguments cannot contain newlines or NULs.")
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%") + '"'
+
+
 def unit_contents(args):
     """Render systemd directives using each directive's own parsing rules."""
     repo = args.repo.resolve()
     script, python = Path(__file__).resolve(), Path(sys.executable).resolve()
 
-    def quote(value):
-        value = str(value)
-        if any(c in value for c in "\r\n\0"):
-            raise NotReady("Systemd command arguments cannot contain newlines or NULs.")
-        return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%") + '"'
-
     # WorkingDirectory does not perform ExecStart's shell-like unquoting.
     directory = str(repo)
     if directory != directory.strip() or any(c in directory for c in "\r\n\0\\"):
         raise NotReady("Checkout path cannot contain boundary whitespace, newlines, NULs, or backslashes.")
-    command = " ".join(quote(x) for x in [python, script, "run", "--repo", repo, "--codex", args.codex,
+    command = " ".join(unit_word(x) for x in [python, script, "run", "--repo", repo, "--codex", args.codex,
                                          "--reserve", args.reserve])
     path_value = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
     service = ("[Unit]\nDescription=Archer overnight coding checkpoint\n\n[Service]\nType=oneshot\n"
                f"WorkingDirectory={directory.replace('%', '%%')}\nExecStart={command}\n"
-               f"Environment={quote('PATH=' + path_value)}\n"
+               f"Environment={unit_word('PATH=' + path_value)}\n"
                "UnsetEnvironment=OPENAI_API_KEY CODEX_API_KEY OPENAI_BASE_URL\nUMask=0077\nTimeoutStartSec=25min\n"
                "TimeoutStopSec=30s\nKillMode=control-group\n")
     timer = ("[Unit]\nDescription=Resume Archer coding checkpoints when eligible\n\n[Timer]\n"
              "OnActiveSec=10s\nOnUnitInactiveSec=60s\nAccuracySec=10s\n\n[Install]\nWantedBy=timers.target\n")
     return {"archer-overnight.service": service, "archer-overnight.timer": timer}
+
+
+def repair_service(existing, repo):
+    """Fix only the directory directive; preserve installed commands and environment."""
+    lines = existing.splitlines(keepends=True)
+    directory_lines = [line for line in lines if line.startswith("WorkingDirectory=")]
+    command_lines = [line for line in lines if line.startswith("ExecStart=")]
+    directory = str(repo.resolve()).replace("%", "%%")
+    fixed = f"WorkingDirectory={directory}\n"
+    legacy = f"WorkingDirectory={unit_word(repo.resolve())}\n"
+    scope = " ".join(unit_word(word) for word in [Path(__file__).resolve(), "run", "--repo", repo.resolve()])
+    if (len(directory_lines) != 1 or directory_lines[0] not in (fixed, legacy)
+            or len(command_lines) != 1 or scope + " " not in command_lines[0]
+            or "Description=Archer overnight coding checkpoint\n" not in lines):
+        raise NotReady("Refusing to repair unrecognized archer-overnight.service; inspect it first.")
+    return existing.replace(directory_lines[0], fixed, 1)
 
 
 def install(args, repair=False):
@@ -377,12 +395,11 @@ def install(args, repair=False):
             raise NotReady(f"Refusing to replace symlink {target}.")
         if target.exists():
             existing = target.read_text()
-            # Accept only our current unit or the original quoted-path variant.
-            directory = str(repo).replace("%", "%%")
-            legacy_directory = directory.replace('"', '\\"')
-            legacy = content.replace(f"WorkingDirectory={directory}\n",
-                                     f'WorkingDirectory="{legacy_directory}"\n')
-            if not repair or existing not in (content, legacy):
+            if not repair:
+                raise NotReady(f"Refusing to overwrite customized/unrecognized {name}; inspect it first.")
+            if name == "archer-overnight.service":
+                units[name] = repair_service(existing, repo)
+            elif existing != content:
                 raise NotReady(f"Refusing to overwrite customized/unrecognized {name}; inspect it first.")
 
     # Validate in a temporary directory before replacing either installed file.

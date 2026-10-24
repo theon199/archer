@@ -224,6 +224,39 @@ class RunnerIntegrationTests(unittest.TestCase):
             self.install_context(repair=True)
         self.assertIn("/some/other/program", service.read_text())
 
+    def test_repair_preserves_installed_environment_and_executables_after_shell_changes(self):
+        units = self.legacy_units()
+        service = units / "archer-overnight.service"
+        installed = service.read_text().replace(
+            overnight.unit_word(overnight.Path(overnight.sys.executable).resolve()),
+            '"/previous/python3"', 1).replace(
+                overnight.unit_word(self.args.codex), '"/previous/codex"', 1)
+        service.write_text(installed)
+        before_state = self.state()
+        with patch.dict(os.environ, {"PATH": "/different/shell/path"}):
+            self.install_context(repair=True)
+        expected = installed.replace(f'WorkingDirectory="{self.repo}"\n', f"WorkingDirectory={self.repo}\n")
+        self.assertEqual(service.read_text(), expected)
+        self.assertEqual(self.state(), before_state)
+        # A second repair is harmless even with another shell environment.
+        self.install_context(repair=True)
+        self.assertEqual(service.read_text(), expected)
+
+    def test_repair_refuses_service_for_another_checkout(self):
+        units = self.legacy_units()
+        service = units / "archer-overnight.service"
+        service.write_text(service.read_text().replace(
+            f'"--repo" "{self.repo}"', '"--repo" "/another/checkout"'))
+        with self.assertRaisesRegex(overnight.NotReady, "unrecognized"):
+            self.install_context(repair=True)
+
+    def test_repair_refuses_duplicate_working_directory(self):
+        units = self.legacy_units()
+        service = units / "archer-overnight.service"
+        service.write_text(service.read_text() + "WorkingDirectory=/somewhere/else\n")
+        with self.assertRaisesRegex(overnight.NotReady, "unrecognized"):
+            self.install_context(repair=True)
+
     def test_failed_validation_does_not_replace_units(self):
         units = self.legacy_units()
         before = (units / "archer-overnight.service").read_text()

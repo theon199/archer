@@ -62,7 +62,7 @@ python3 scripts/overnight.py status
 journalctl --user -u archer-overnight.service -n 40 --no-pager
 ```
 
-`repair` validates the replacement units, stops the timer, and refuses to replace units while a checkpoint holds the repository lock. It accepts only recognized generated units for this checkout and preserves the saved session, status, retry timestamp, and original deadline. It does not extend an expired run or restart a terminal status. If a checkpoint is running, stop `archer-overnight.service` first, then retry. Keep your existing `.archer-overnight/` directory. [WorkingDirectory syntax](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#WorkingDirectory=)
+`repair` validates the replacement units, stops the timer, and refuses to replace units while a checkpoint holds the repository lock. It recognizes the service by its description, checkout, and runner command, then changes only its `WorkingDirectory` line. The installed Python/Codex paths and environment are preserved even if your current shell differs. The timer must match the generated timer. It also preserves the saved session, status, retry timestamp, and original deadline. It does not extend an expired run or restart a terminal status. If a checkpoint is running, stop `archer-overnight.service` first, then retry. Keep your existing `.archer-overnight/` directory. [WorkingDirectory syntax](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#WorkingDirectory=)
 
 ## Usage and recovery behavior
 
