@@ -73,3 +73,6 @@ logs/
 
 # Local MCP server configs with credentials
 config/mcp_servers.json
+
+# Private overnight coding-agent state and transcripts
+.archer-overnight/
