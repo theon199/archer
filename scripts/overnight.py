@@ -17,6 +17,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -326,47 +327,109 @@ def initialize(args):
                                        "next_attempt": 0, "failures": 0})
 
 
-def install(args):
-    if sys.platform != "linux" or not shutil.which("systemctl"):
-        raise NotReady("Install requires Linux with a working systemd user manager.")
-    # Test account access before creating an unattended service. Low quota can wait.
-    quota_decision(quota_snapshot(args.codex), args.reserve, time.time())
-    if (args.repo / ".archer-overnight/state.json").exists():
-        raise NotReady("A run exists. Stop its service and inspect state before starting another.")
+def unit_contents(args):
+    """Render systemd directives using each directive's own parsing rules."""
     repo = args.repo.resolve()
     script, python = Path(__file__).resolve(), Path(sys.executable).resolve()
-    unit_dir = Path.home() / ".config/systemd/user"
-    unit_dir.mkdir(parents=True, exist_ok=True)
 
     def quote(value):
-        # systemd expands specifiers even inside quoted ExecStart words.
-        return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%") + '"'
+        value = str(value)
+        if any(c in value for c in "\r\n\0"):
+            raise NotReady("Systemd command arguments cannot contain newlines or NULs.")
+        return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%") + '"'
 
+    # WorkingDirectory does not perform ExecStart's shell-like unquoting.
+    directory = str(repo)
+    if directory != directory.strip() or any(c in directory for c in "\r\n\0\\"):
+        raise NotReady("Checkout path cannot contain boundary whitespace, newlines, NULs, or backslashes.")
     command = " ".join(quote(x) for x in [python, script, "run", "--repo", repo, "--codex", args.codex,
                                          "--reserve", args.reserve])
     path_value = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
     service = ("[Unit]\nDescription=Archer overnight coding checkpoint\n\n[Service]\nType=oneshot\n"
-               f"WorkingDirectory={quote(repo)}\nExecStart={command}\n"
+               f"WorkingDirectory={directory.replace('%', '%%')}\nExecStart={command}\n"
                f"Environment={quote('PATH=' + path_value)}\n"
                "UnsetEnvironment=OPENAI_API_KEY CODEX_API_KEY OPENAI_BASE_URL\nUMask=0077\nTimeoutStartSec=25min\n"
                "TimeoutStopSec=30s\nKillMode=control-group\n")
     timer = ("[Unit]\nDescription=Resume Archer coding checkpoints when eligible\n\n[Timer]\n"
              "OnActiveSec=10s\nOnUnitInactiveSec=60s\nAccuracySec=10s\n\n[Install]\nWantedBy=timers.target\n")
-    for name in ("archer-overnight.service", "archer-overnight.timer"):
-        if (unit_dir / name).exists():
-            raise NotReady(f"Refusing to overwrite existing {name}; inspect/remove it first.")
-    (unit_dir / "archer-overnight.service").write_text(service)
-    (unit_dir / "archer-overnight.timer").write_text(timer)
-    initialize(args)
-    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
-    subprocess.run(["systemctl", "--user", "enable", "--now", "archer-overnight.timer"], check=True)
-    print("Timer enabled. Ensure user lingering is enabled before logging out; see docs/dgx-overnight.md.")
+    return {"archer-overnight.service": service, "archer-overnight.timer": timer}
+
+
+def install(args, repair=False):
+    if sys.platform != "linux" or not shutil.which("systemctl"):
+        raise NotReady("Install requires Linux with a working systemd user manager.")
+    # Test account access before creating an unattended service. Low quota can wait.
+    quota_decision(quota_snapshot(args.codex), args.reserve, time.time())
+    if not shutil.which("systemd-analyze"):
+        raise NotReady("systemd-analyze is required to validate the generated user units.")
+    repo = args.repo.resolve()
+    state_path = repo / ".archer-overnight/state.json"
+    if state_path.exists() and not repair:
+        raise NotReady("A run exists. Use repair to fix its units while preserving session state.")
+    if repair and not state_path.exists():
+        raise NotReady("No existing run to repair. Use install to create a new run.")
+    unit_dir = Path.home() / ".config/systemd/user"
+    unit_dir.mkdir(parents=True, exist_ok=True)
+    units = unit_contents(args)
+    for name, content in units.items():
+        target = unit_dir / name
+        if target.is_symlink():
+            raise NotReady(f"Refusing to replace symlink {target}.")
+        if target.exists():
+            existing = target.read_text()
+            # Accept only our current unit or the original quoted-path variant.
+            directory = str(repo).replace("%", "%%")
+            legacy_directory = directory.replace('"', '\\"')
+            legacy = content.replace(f"WorkingDirectory={directory}\n",
+                                     f'WorkingDirectory="{legacy_directory}"\n')
+            if not repair or existing not in (content, legacy):
+                raise NotReady(f"Refusing to overwrite customized/unrecognized {name}; inspect it first.")
+
+    # Validate in a temporary directory before replacing either installed file.
+    with tempfile.TemporaryDirectory(prefix="archer-units-", dir=unit_dir) as staging:
+        paths = []
+        for name, content in units.items():
+            path = Path(staging) / name
+            path.write_text(content)
+            paths.append(str(path))
+        subprocess.run(["systemd-analyze", "--user", "verify", *paths], check=True)
+
+    if repair:
+        # A malformed unit may make stop return nonzero; the lock below still
+        # prevents replacing units while a checkpoint owns this checkout.
+        subprocess.run(["systemctl", "--user", "stop", "archer-overnight.timer"], check=False)
+    folder = repo / ".archer-overnight"
+    folder.mkdir(mode=0o700, exist_ok=True)
+    with (folder / "lock").open("w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise NotReady("A checkpoint is running. Stop archer-overnight.service before repair.")
+        for name, content in units.items():
+            (unit_dir / name).write_text(content)
+        if not repair:
+            initialize(args)
+        subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+        for name in units:
+            loaded = subprocess.run(["systemctl", "--user", "show", name, "--property=LoadState", "--value"],
+                                    check=True, capture_output=True, text=True)
+            if loaded.stdout.strip() != "loaded":
+                raise NotReady(f"{name} did not load: {loaded.stdout.strip()}. Inspect its user journal.")
+        subprocess.run(["systemctl", "--user", "enable", "--now", "archer-overnight.timer"], check=True)
+        active = subprocess.run(["systemctl", "--user", "is-active", "--quiet", "archer-overnight.timer"],
+                                check=False)
+        if active.returncode != 0:
+            raise NotReady("Timer is not active. Inspect journalctl --user -u archer-overnight.timer.")
+    print("Timer enabled and active. Verify the first checkpoint in the user journal before logging out.")
+    if repair:
+        state = json.loads(state_path.read_text())
+        print(f"Preserved run status {state['status']} and deadline {time.ctime(state['until'])}.")
 
 
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["check", "install", "start", "run", "status", "stop"])
+    parser.add_argument("action", choices=["check", "install", "repair", "start", "run", "status", "stop"])
     parser.add_argument("--repo", type=Path, default=ROOT)
     parser.add_argument("--codex", default=shutil.which("codex") or "codex")
     parser.add_argument("--reserve", type=float, default=15)
@@ -384,6 +447,8 @@ def main():
             print(json.dumps({"eligible_now": retry is None, "next_check_at": retry, "windows": windows}, indent=2))
         elif args.action == "install":
             install(args)
+        elif args.action == "repair":
+            install(args, repair=True)
         elif args.action == "start":
             initialize(args)
         elif args.action == "run":

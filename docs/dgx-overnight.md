@@ -48,6 +48,22 @@ python3 scripts/overnight.py status
 
 The installer writes only `archer-overnight.service` and `archer-overnight.timer` in your user systemd directory plus private local run state. It captures this checkout and the Python/Codex executable paths. Do not move the checkout while the timer is enabled. It refuses to overwrite existing units or an existing run. No timer is installed on the development Mac by these repository changes.
 
+The units are checked with `systemd-analyze --user verify` before installation. The installer also checks both units' load state and confirms the timer is active before reporting success. An active timer does not by itself prove that a coding checkpoint succeeded; inspect the service journal and run status below.
+
+### Repair an installation with a quoted WorkingDirectory
+
+The original installer incorrectly wrote `WorkingDirectory="/home/sri/archer"`. Systemd treats those quote characters as part of this directive's path, causing a `bad-setting` service and an inactive timer. Update the checkout and repair the generated units:
+
+```bash
+git pull --ff-only
+python3 scripts/overnight.py repair
+systemctl --user status archer-overnight.timer archer-overnight.service --no-pager -l
+python3 scripts/overnight.py status
+journalctl --user -u archer-overnight.service -n 40 --no-pager
+```
+
+`repair` validates the replacement units, stops the timer, and refuses to replace units while a checkpoint holds the repository lock. It accepts only recognized generated units for this checkout and preserves the saved session, status, retry timestamp, and original deadline. It does not extend an expired run or restart a terminal status. If a checkpoint is running, stop `archer-overnight.service` first, then retry. Keep your existing `.archer-overnight/` directory. [WorkingDirectory syntax](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#WorkingDirectory=)
+
 ## Usage and recovery behavior
 
 - Default reserve: **15% remaining**. Each checkpoint checks usage before starting and about once per minute while running. Interruption is best effort: a large in-flight request or use elsewhere on the same account can cross the reserve between checks. This is not a hard token/spending guarantee.
@@ -85,7 +101,7 @@ No GitHub pushes, external publication, paid service provisioning, or real email
 
 ## Validation performed before pushing
 
-The standalone unittest suite covers usage parsing, both quota windows, missing data, actual-reset waiting, subprocess RPC, session-ID resumption, mid-run usage interruption, loss of the usage monitor, completion evidence, deadline handling, locking, and generated timer units with a fake Codex executable. A separate live read-only quota check passed against the installed CLI. No paid coding run or real Linux timer was started during this preparation; verify installation and the first checkpoint on the DGX before leaving it unattended.
+The standalone unittest suite covers usage parsing, both quota windows, missing data, actual-reset waiting, subprocess RPC, session-ID resumption, mid-run usage interruption, loss of the usage monitor, completion evidence, deadline handling, locking, and generated timer units with a fake Codex executable. Repair tests cover the quoted-path regression, preserved state, refused custom units, failed validation, bad load states, and inactive timers. Systemd calls are mocked in the local suite; the installer performs real validation on Linux. A separate live read-only quota check passed against the installed CLI. No paid coding run or real Linux timer was started during this preparation; verify installation and the first checkpoint on the DGX before leaving it unattended.
 
 ```bash
 python3 -m unittest discover -s scripts -p 'test_overnight.py'

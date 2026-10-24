@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import time
 import unittest
@@ -101,7 +102,7 @@ else:
 class RunnerIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
-        self.repo = Path(self.temporary.name)
+        self.repo = Path(self.temporary.name).resolve()
         (self.repo / "docs").mkdir()
         (self.repo / "docs/dgx-goal.txt").write_text("Complete the test objective.")
         self.codex = self.repo / "fake-codex"
@@ -172,7 +173,7 @@ class RunnerIntegrationTests(unittest.TestCase):
                 patch.object(overnight.shutil, "which", return_value="/usr/bin/systemctl"), \
                 patch.object(overnight.Path, "home", return_value=self.repo), \
                 patch.object(overnight, "quota_snapshot", return_value=snapshot()), \
-                patch.object(overnight.subprocess, "run") as run:
+                patch.object(overnight.subprocess, "run", side_effect=self.systemd_success) as run:
             overnight.install(self.args)
         units = self.repo / ".config/systemd/user"
         service = (units / "archer-overnight.service").read_text()
@@ -180,7 +181,102 @@ class RunnerIntegrationTests(unittest.TestCase):
         self.assertIn("KillMode=control-group", service)
         self.assertIn("UnsetEnvironment=OPENAI_API_KEY CODEX_API_KEY OPENAI_BASE_URL", service)
         self.assertIn("OnUnitInactiveSec=60s", timer)
-        self.assertEqual(run.call_count, 2)
+        self.assertIn(f"WorkingDirectory={self.repo}\n", service)
+        self.assertNotIn('WorkingDirectory="', service)
+        self.assertEqual(run.call_count, 6)
+        self.assertEqual(run.call_args_list[0].args[0][:3], ["systemd-analyze", "--user", "verify"])
+        self.assertEqual(self.state()["status"], "ready")
+
+    @staticmethod
+    def systemd_success(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, stdout="loaded\n" if "show" in command else "")
+
+    def install_context(self, repair=False, run=None):
+        with patch.object(overnight.sys, "platform", "linux"), \
+                patch.object(overnight.shutil, "which", return_value="/usr/bin/systemctl"), \
+                patch.object(overnight.Path, "home", return_value=self.repo), \
+                patch.object(overnight, "quota_snapshot", return_value=snapshot()), \
+                patch.object(overnight.subprocess, "run", side_effect=run or self.systemd_success):
+            overnight.install(self.args, repair=repair)
+
+    def legacy_units(self):
+        units = self.repo / ".config/systemd/user"
+        units.mkdir(parents=True)
+        for name, content in overnight.unit_contents(self.args).items():
+            content = content.replace(f"WorkingDirectory={self.repo}\n", f'WorkingDirectory="{self.repo}"\n')
+            (units / name).write_text(content)
+        return units
+
+    def test_repair_corrects_quoted_path_and_preserves_session_and_deadline(self):
+        units = self.legacy_units()
+        state = self.state()
+        state.update(thread_id="existing-session", status="waiting", next_attempt=time.time() + 5000)
+        overnight.write_json(self.repo / ".archer-overnight/state.json", state)
+        self.install_context(repair=True)
+        self.assertEqual(self.state(), state)
+        self.assertIn(f"WorkingDirectory={self.repo}\n", (units / "archer-overnight.service").read_text())
+
+    def test_repair_refuses_unrecognized_units(self):
+        units = self.legacy_units()
+        service = units / "archer-overnight.service"
+        service.write_text("[Service]\nExecStart=/some/other/program\n")
+        with self.assertRaisesRegex(overnight.NotReady, "unrecognized"):
+            self.install_context(repair=True)
+        self.assertIn("/some/other/program", service.read_text())
+
+    def test_failed_validation_does_not_replace_units(self):
+        units = self.legacy_units()
+        before = (units / "archer-overnight.service").read_text()
+        commands = []
+
+        def invalid(command, **kwargs):
+            commands.append(command)
+            raise subprocess.CalledProcessError(1, command)
+
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.install_context(repair=True, run=invalid)
+        self.assertEqual(len(commands), 1)
+        self.assertEqual((units / "archer-overnight.service").read_text(), before)
+
+    def test_inactive_timer_does_not_report_success(self):
+        self.legacy_units()
+
+        def inactive(command, **kwargs):
+            if "is-active" in command:
+                return subprocess.CompletedProcess(command, 3)
+            return self.systemd_success(command, **kwargs)
+
+        with patch("builtins.print") as output:
+            with self.assertRaisesRegex(overnight.NotReady, "not active"):
+                self.install_context(repair=True, run=inactive)
+        output.assert_not_called()
+
+    def test_bad_load_state_prevents_activation(self):
+        self.legacy_units()
+        commands = []
+
+        def bad_load(command, **kwargs):
+            commands.append(command)
+            if "show" in command:
+                return subprocess.CompletedProcess(command, 0, stdout="bad-setting\n")
+            return self.systemd_success(command, **kwargs)
+
+        with self.assertRaisesRegex(overnight.NotReady, "did not load"):
+            self.install_context(repair=True, run=bad_load)
+        self.assertFalse(any("enable" in command for command in commands))
+
+    def test_repair_refuses_running_checkpoint(self):
+        self.legacy_units()
+        with (self.repo / ".archer-overnight/lock").open("w") as lock:
+            overnight.fcntl.flock(lock, overnight.fcntl.LOCK_EX | overnight.fcntl.LOCK_NB)
+            with self.assertRaisesRegex(overnight.NotReady, "checkpoint is running"):
+                self.install_context(repair=True)
+
+    def test_directory_with_spaces_and_specifiers_is_unquoted(self):
+        self.args.repo = self.repo / "space and 100%"
+        service = overnight.unit_contents(self.args)["archer-overnight.service"]
+        self.assertIn(f"WorkingDirectory={self.repo}/space and 100%%\n", service)
+        self.assertIn(f'"{self.repo}/space and 100%%"', service)  # ExecStart still unquotes words.
 
     def test_completion_requires_evidence_and_handoff(self):
         (self.repo / "outcome.json").write_text(json.dumps({"status": "complete", "evidence": []}))
