@@ -5,3 +5,22 @@
     @apply bg-neutral-950 text-neutral-100 antialiased font-sans selection:bg-purple-600 selection:text-white;
   }
 }
+
+@layer components {
+  .chat-answer { @apply mt-2 space-y-3 whitespace-normal leading-relaxed; }
+  .chat-answer p { @apply my-2; }
+  .chat-answer h1, .chat-answer h2, .chat-answer h3, .chat-answer h4 { @apply mt-4 mb-2 font-semibold text-neutral-100; }
+  .chat-answer h1 { @apply text-xl; }
+  .chat-answer h2 { @apply text-lg; }
+  .chat-answer ul { @apply my-2 list-disc pl-6; }
+  .chat-answer ol { @apply my-2 list-decimal pl-6; }
+  .chat-answer li { @apply my-1; }
+  .chat-answer a { @apply text-violet-300 underline decoration-violet-400/60 underline-offset-2 hover:text-violet-200; }
+  .chat-answer blockquote { @apply my-3 border-l-2 border-violet-500 pl-4 text-neutral-300; }
+  .chat-answer code { @apply rounded bg-neutral-800 px-1 py-0.5 font-mono text-sm; }
+  .chat-answer pre { @apply my-3 overflow-x-auto rounded-lg bg-neutral-950 p-3; }
+  .chat-answer pre code { @apply bg-transparent p-0; }
+  .chat-answer table { @apply my-3 block max-w-full overflow-x-auto text-left; }
+  .chat-answer th, .chat-answer td { @apply border border-neutral-700 px-3 py-2; }
+  .chat-answer hr { @apply my-4 border-neutral-700; }
+}

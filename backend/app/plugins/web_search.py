@@ -1,18 +1,45 @@
-"""Web Search Plugin - Cited web search via Brave Search API."""
+"""Permission-controlled web search using Tavily's basic search."""
 
+import json
 import logging
+import os
+import stat
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
 from app.config import settings
+from app.plugins.arguments import SearchArguments
 from app.plugins.base import Plugin
 
 logger = logging.getLogger(__name__)
+MAX_RESPONSE_BYTES = 1024 * 1024
+
+
+def tavily_key():
+    """Read only an owner-only regular credential file; never log its contents."""
+    path = settings.tavily_api_key_file
+    if path is None:
+        return None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+                return None
+            data = stream.read(513)
+        if not 1 <= len(data) <= 512 or any(byte < 33 or byte > 126 for byte in data):
+            return None
+        return data.decode("ascii")
+    except OSError:
+        return None
 
 
 class WebSearchPlugin(Plugin):
-    """Search the web with source citations using Brave Search API."""
+    """Search the web with source links using Tavily."""
+
+    version = "2-tavily"
 
     @property
     def name(self) -> str:
@@ -20,65 +47,77 @@ class WebSearchPlugin(Plugin):
 
     @property
     def description(self) -> str:
-        return "Perform a web search and retrieve cited sources and snippets."
+        return "Search Tavily for sources and excerpts; the search query is sent to Tavily."
 
     @property
     def schema(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "The search query string."},
-                "count": {"type": "integer", "description": "Number of results (1-5).", "default": 3},
-            },
-            "required": ["query"],
-        }
+        return SearchArguments.model_json_schema()
 
     async def execute(self, account_id: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        arguments = SearchArguments.model_validate(arguments).model_dump()
         query = arguments.get("query", "").strip()
         count = min(arguments.get("count", 3), 5)
 
         if not query:
             return {"success": False, "error": "Query cannot be empty."}
 
-        # If Brave Search API key is configured, use real API
-        if settings.brave_search_api_key:
+        key = tavily_key()
+        if key:
             headers = {
                 "Accept": "application/json",
-                "Accept-Encoding": "gzip",
-                "X-Subscription-Token": settings.brave_search_api_key,
+                "Authorization": f"Bearer {key}",
             }
-            url = "https://api.search.brave.com/res/v1/web/search"
+            url = "https://api.tavily.com/search"
+            payload = {
+                "query": query,
+                "search_depth": "basic",
+                "max_results": count,
+                "include_answer": False,
+                "include_raw_content": False,
+                "auto_parameters": False,
+            }
             try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    resp = await client.get(url, headers=headers, params={"q": query, "count": count})
-                    if resp.status_code == 200:
-                        data = resp.json()
+                async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
+                    async with client.stream("POST", url, headers=headers, json=payload) as resp:
+                        if resp.status_code != 200:
+                            return {"success": False, "error": f"Tavily API returned status {resp.status_code}"}
+                        body = bytearray()
+                        async for chunk in resp.aiter_bytes():
+                            if len(chunk) > MAX_RESPONSE_BYTES - len(body):
+                                return {"success": False, "error": "Search response exceeded size limit"}
+                            body.extend(chunk)
+                        data = json.loads(body)
+                        if not isinstance(data, dict) or not isinstance(data.get("results"), list):
+                            return {"success": False, "error": "Search response was invalid"}
                         results = []
-                        for item in data.get("web", {}).get("results", [])[:count]:
+                        for item in data.get("results", [])[:count]:
+                            if not isinstance(item, dict) or not all(
+                                isinstance(item.get(field), str) for field in ("title", "url", "content")
+                            ):
+                                return {"success": False, "error": "Search response was invalid"}
+                            address = item["url"]
+                            parsed = urlsplit(address)
+                            if (
+                                len(address) > 2048
+                                or parsed.scheme not in {"http", "https"}
+                                or not parsed.hostname
+                                or parsed.username is not None
+                                or parsed.password is not None
+                            ):
+                                return {"success": False, "error": "Search response was invalid"}
                             results.append(
                                 {
-                                    "title": item.get("title"),
-                                    "url": item.get("url"),
-                                    "snippet": item.get("description"),
+                                    "title": item["title"][:500],
+                                    "url": address,
+                                    "snippet": item["content"][:4000],
                                 }
                             )
-                        return {"success": True, "query": query, "results": results}
-                    else:
-                        return {"success": False, "error": f"Brave API returned status {resp.status_code}"}
-            except Exception as e:
-                logger.error(f"Search request failed: {e}")
-                return {"success": False, "error": f"Search connection failed: {e}"}
+                        return {"success": True, "query": query, "results": results, "untrusted_content": True}
+            except Exception:
+                return {"success": False, "error": "Search connection failed"}
 
-        # Safe fallback simulated search response when no external key is provided
         return {
-            "success": True,
-            "query": query,
-            "mock": True,
-            "results": [
-                {
-                    "title": f"Local Search Knowledge on '{query}'",
-                    "url": "https://spark.local/search/results",
-                    "snippet": f"Verified local search results for query: {query}. (Brave API key not configured; using offline index).",
-                }
-            ],
+            "success": False,
+            "status": "unavailable",
+            "error": "Tavily API key is not configured or is not private.",
         }

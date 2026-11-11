@@ -1,5 +1,7 @@
 # Archer system architecture and tool decisions
 
+**Current V1 scope:** one owner and private remote access, as recorded in the [V1 to-do list](v1-todo.md). Earlier public-hostname and invitation references in this research document are historical proposals, not current release requirements. Authentication, tool permissions, and ownership checks remain required.
+
 Research checked: **October 21, 2026**. Status: **proposed design, incorporating the confirmed product scope; pending workflow priorities and Spark measurements**.
 
 This architecture was originally drafted before implementation. On October 23, the GitHub main branch was found to contain a FastAPI/React scaffold, dependency lockfiles, starter plugins, and model adapters. Inspect and extend that implementation; do not replace it merely to match proposed paths or versions below. The design is a target, not evidence that integrations, security boundaries, or benchmarks have passed. This document supplements `archer v1 deepresearchplan.md`.

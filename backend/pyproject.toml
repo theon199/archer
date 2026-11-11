@@ -11,10 +11,17 @@ dependencies = [
     "pydantic-settings>=2.4.0",
     "aiosqlite>=0.20.0",
     "httpx>=0.27.0",
+    "httpcore==1.0.9",
     "sse-starlette>=2.1.0",
+    "argon2-cffi==25.1.0",
+    "cryptography==50.0.2",
+    "mcp==2.3.0",
+    "jsonschema==4.26.0",
+    "anyio==4.15.1",
 ]
 
 [project.optional-dependencies]
+time-mcp = ["mcp-server-time==2026.10.19"]
 dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",

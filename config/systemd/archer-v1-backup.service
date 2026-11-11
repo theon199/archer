@@ -1,0 +1,8 @@
+[Unit]
+Description=Create Archer V1 encrypted local backup
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/archer/backend
+UMask=0077
+ExecStart=/usr/bin/python3 %h/archer/scripts/with-sqlite-runtime.py --runtime %h/archer/build/sqlite-3.54.1 -- %h/archer/backend/.venv/bin/python -m app.backup_rotation --data-dir %h/.local/share/archer-v1/data --files-root %h/.local/share/archer-v1/approved-files --directory %h/.local/share/archer-backups --key-file %h/.config/archer/backup.key

@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily Archer V1 encrypted local backup
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target

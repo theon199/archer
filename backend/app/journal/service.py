@@ -11,21 +11,32 @@ from app.storage.database import get_db
 logger = logging.getLogger(__name__)
 
 
+async def emit_journal_event(db, entry_id):
+    row = await (await db.execute("SELECT * FROM journal_entries WHERE id = ?", (entry_id,))).fetchone()
+    data = dict(row)
+    data["arguments"] = json.loads(data["arguments"])
+    data["outcome"] = json.loads(data["outcome"]) if data["outcome"] else None
+    await db.execute(
+        "INSERT INTO journal_events (account_id, journal_id, data) VALUES (?, ?, ?)",
+        (row["account_id"], entry_id, json.dumps(data)),
+    )
+
+
 class JournalService:
     """Manages the action journal and streams real-time updates to connected clients."""
 
     def __init__(self):
         # Pub/sub queues for SSE streaming to connected web clients
-        self._listeners: list[asyncio.Queue] = []
+        self._listeners: dict[asyncio.Queue, str] = {}
 
-    def subscribe(self) -> asyncio.Queue:
-        q = asyncio.Queue()
-        self._listeners.append(q)
+    def subscribe(self, account_id: str) -> asyncio.Queue:
+        q = asyncio.Queue(maxsize=100)
+        self._listeners[q] = account_id
         return q
 
     def unsubscribe(self, q: asyncio.Queue) -> None:
         if q in self._listeners:
-            self._listeners.remove(q)
+            del self._listeners[q]
 
     async def log_action(
         self,
@@ -56,38 +67,48 @@ class JournalService:
         }
 
         # Persist to database
-        try:
-            async with get_db() as db:
-                await db.execute(
-                    """
-                    INSERT INTO journal_entries
-                    (id, account_id, conversation_id, run_id, tool_name, arguments, permission_decision, outcome, error)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        entry_id,
-                        account_id,
-                        conversation_id,
-                        run_id,
-                        tool_name,
-                        args_json,
-                        permission_decision,
-                        outcome_json,
-                        error,
-                    ),
-                )
-                await db.commit()
-        except Exception as e:
-            logger.error(f"Failed to persist journal entry: {e}")
+        async with get_db() as db:
+            await db.execute(
+                """
+                INSERT INTO journal_entries
+                (id, account_id, conversation_id, run_id, tool_name, arguments, permission_decision, outcome, error)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    entry_id,
+                    account_id,
+                    conversation_id,
+                    run_id,
+                    tool_name,
+                    args_json,
+                    permission_decision,
+                    outcome_json,
+                    error,
+                ),
+            )
+            await emit_journal_event(db, entry_id)
+            await db.commit()
 
         # Broadcast to active SSE listeners
-        for q in list(self._listeners):
+        for q, owner in list(self._listeners.items()):
+            if owner != account_id:
+                continue
             try:
-                await q.put(entry)
-            except Exception:
-                pass
+                q.put_nowait(entry)
+            except asyncio.QueueFull:
+                self.unsubscribe(q)
 
         return entry
+
+    async def events_after(self, account_id: str, after: int):
+        async with get_db() as db:
+            rows = await (
+                await db.execute(
+                    "SELECT seq, data FROM journal_events WHERE account_id = ? AND seq > ? ORDER BY seq LIMIT 100",
+                    (account_id, after),
+                )
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     async def get_history(self, account_id: str, limit: int = 50) -> list[dict[str, Any]]:
         """Retrieve recent journal entries for this account."""
@@ -97,7 +118,7 @@ class JournalService:
                 SELECT id, conversation_id, run_id, tool_name, arguments, permission_decision, outcome, error, timestamp
                 FROM journal_entries
                 WHERE account_id = ?
-                ORDER BY timestamp DESC
+                ORDER BY rowid DESC
                 LIMIT ?
                 """,
                 (account_id, limit),

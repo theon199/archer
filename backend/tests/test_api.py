@@ -7,7 +7,7 @@ from app.main import app
 @pytest.mark.asyncio
 async def test_health():
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://test", headers={"Authorization": "Bearer test-token"}) as client:
         resp = await client.get("/api/health")
         assert resp.status_code == 200
         data = resp.json()
@@ -18,7 +18,7 @@ async def test_health():
 @pytest.mark.asyncio
 async def test_list_plugins():
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://test", headers={"Authorization": "Bearer test-token"}) as client:
         resp = await client.get("/api/plugins")
         assert resp.status_code == 200
         data = resp.json()
@@ -32,7 +32,7 @@ async def test_list_plugins():
 @pytest.mark.asyncio
 async def test_models_status():
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://test", headers={"Authorization": "Bearer test-token"}) as client:
         resp = await client.get("/api/models/status")
         assert resp.status_code == 200
         data = resp.json()

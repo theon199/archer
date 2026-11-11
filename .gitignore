@@ -76,3 +76,12 @@ config/mcp_servers.json
 
 # Private overnight coding-agent state and transcripts
 .archer-overnight/
+
+# Encrypted owner backups remain private
+*.arbk
+
+# Local owner files and verification artifacts
+data/approved_files/*
+!data/approved_files/.gitkeep
+docs/evidence/
+docs/overnight-handoff.md

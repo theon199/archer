@@ -1,0 +1,54 @@
+name: archer-v1
+services:
+  bridge:
+    image: ${ARCHER_IMAGE:?Set ARCHER_IMAGE to the reviewed local image digest}
+    pull_policy: never
+    user: "${ARCHER_UID:?Set ARCHER_UID}:${ARCHER_GID:?Set ARCHER_GID}"
+    command: ["python", "-m", "app.model_bridge"]
+    environment:
+      ARCHER_MODEL_SOCKET: /bridge/model.sock
+    volumes:
+      - ${ARCHER_BRIDGE_DIR:?Set ARCHER_BRIDGE_DIR}:/bridge:rw
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+  app:
+    image: ${ARCHER_IMAGE:?Set ARCHER_IMAGE to the reviewed local image digest}
+    pull_policy: never
+    user: "${ARCHER_UID:?Set ARCHER_UID}:${ARCHER_GID:?Set ARCHER_GID}"
+    network_mode: service:bridge
+    depends_on: [bridge]
+    command: ["python", "-m", "app.compose_guard", "app"]
+    environment: &settings
+      ARCHER_ENV: production
+      ARCHER_HOST: 127.0.0.1
+      ARCHER_DATA_DIR: /data
+      ARCHER_APPROVED_FILES_ROOT: /approved
+      ARCHER_STATIC_DIR: /opt/archer/frontend
+      ARCHER_MODEL_PROVIDER: local-ollama
+      ARCHER_OLLAMA_BASE_URL: http://127.0.0.1:11434
+      ARCHER_OLLAMA_MODEL: gemma4:26b
+      ARCHER_OLLAMA_NUM_CTX: "4096"
+      ARCHER_EXPECTED_MODEL_DIGEST: ${ARCHER_EXPECTED_MODEL_DIGEST:?Set the reviewed model digest}
+    volumes: &mounts
+      - ${ARCHER_BRIDGE_DIR:?Set ARCHER_BRIDGE_DIR}:/bridge:rw
+      - ${ARCHER_DATA_DIR:?Set ARCHER_DATA_DIR}:/data:rw
+      - ${ARCHER_APPROVED_FILES_ROOT:?Set ARCHER_APPROVED_FILES_ROOT}:/approved:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+  worker:
+    image: ${ARCHER_IMAGE:?Set ARCHER_IMAGE to the reviewed local image digest}
+    pull_policy: never
+    user: "${ARCHER_UID:?Set ARCHER_UID}:${ARCHER_GID:?Set ARCHER_GID}"
+    network_mode: service:bridge
+    depends_on: [bridge]
+    command: ["python", "-m", "app.compose_guard", "worker"]
+    environment: *settings
+    volumes: *mounts
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128

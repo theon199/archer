@@ -1,0 +1,64 @@
+{
+  "name": "mcp_time_current",
+  "account_id": "REPLACE_WITH_OWNER_ACCOUNT_ID",
+  "description": "Read the actual current date, time, weekday and UTC offset in America/Los_Angeles or UTC for everyday planning. Read-only; requires owner permission.",
+  "remote_tool": "get_current_time",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "timezone": {
+        "type": "string",
+        "enum": [
+          "America/Los_Angeles",
+          "UTC"
+        ]
+      }
+    },
+    "required": [
+      "timezone"
+    ],
+    "additionalProperties": false
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "timezone": {
+        "type": "string",
+        "enum": [
+          "America/Los_Angeles",
+          "UTC"
+        ]
+      },
+      "datetime": {
+        "type": "string",
+        "minLength": 20,
+        "maxLength": 64
+      },
+      "day_of_week": {
+        "type": "string",
+        "enum": [
+          "Monday",
+          "Tuesday",
+          "Wednesday",
+          "Thursday",
+          "Friday",
+          "Saturday",
+          "Sunday"
+        ]
+      },
+      "is_dst": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "timezone",
+      "datetime",
+      "day_of_week",
+      "is_dst"
+    ],
+    "additionalProperties": false
+  },
+  "advertised_sha256": "5b98860a84ca3152d9b0881b98c7e7b13e0bd7ac92bded6bc614e35f06455948",
+  "image": "sha256:69495d869de338fe9a1aead2c488a9b80cf95815c07c221cd3495ef26ed543a4",
+  "read_only": true
+}

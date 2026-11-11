@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from app.config import settings
+from app.readiness import model_ready, validate_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -23,10 +24,10 @@ class ModelAdapter:
             "ollama": {"available": False, "models": []},
             "sglang": {"available": False, "models": []},
             "cloud_enabled": {
-                "anthropic": bool(settings.anthropic_api_key),
-                "gemini": bool(settings.gemini_api_key),
-                "openai": bool(settings.openai_api_key),
-                "deepseek": bool(settings.deepseek_api_key),
+                "anthropic": False,
+                "gemini": False,
+                "openai": False,
+                "deepseek": False,
             },
         }
 
@@ -57,13 +58,111 @@ class ModelAdapter:
         return status
 
     @staticmethod
+    async def chat_with_tools_step(
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        system_prompt: str | None = None,
+        provider: str | None = None,
+    ) -> dict[str, Any]:
+        """Execute a single structured agent step with the local model, supporting tools and reasoning."""
+        selected_provider = provider or settings.model_provider
+        if selected_provider not in {"local-ollama", "local-sglang"}:
+            raise ValueError("Cloud inference is disabled; select a local provider")
+        validate_runtime(selected_provider)
+        if settings.expected_model_digest:
+            if selected_provider != settings.model_provider or not await model_ready():
+                raise RuntimeError("Pinned local model is unavailable or its digest changed")
+
+        formatted_messages = []
+        if system_prompt:
+            formatted_messages.append({"role": "system", "content": system_prompt})
+        formatted_messages.extend(messages)
+
+        if selected_provider == "local-ollama":
+            return await ModelAdapter._chat_step_ollama(formatted_messages, tools)
+        elif selected_provider == "local-sglang":
+            return await ModelAdapter._chat_step_sglang(formatted_messages, tools)
+        else:
+            return {
+                "role": "assistant",
+                "content": f"Archer is online on NVIDIA DGX Spark ({selected_provider}).",
+                "thinking": "",
+                "tool_calls": [],
+            }
+
+    @staticmethod
+    async def _chat_step_ollama(
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        url = f"{settings.ollama_base_url}/api/chat"
+        payload: dict[str, Any] = {
+            "model": settings.ollama_model,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "num_ctx": settings.ollama_num_ctx,
+                "temperature": settings.ollama_temperature,
+            },
+        }
+        if tools:
+            payload["tools"] = tools
+
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                res = await client.post(url, json=payload)
+                res.raise_for_status()
+                msg = res.json()["message"]
+                return {
+                    "role": "assistant",
+                    "content": msg.get("content", ""),
+                    "thinking": msg.get("thinking", ""),
+                    "tool_calls": msg.get("tool_calls", []),
+                }
+        except Exception:
+            raise RuntimeError("Local Ollama request failed") from None
+
+    @staticmethod
+    async def _chat_step_sglang(
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        url = f"{settings.sglang_base_url}/chat/completions"
+        payload: dict[str, Any] = {
+            "model": settings.sglang_model,
+            "messages": messages,
+            "stream": False,
+        }
+        if tools:
+            payload["tools"] = tools
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                res = await client.post(url, json=payload)
+                res.raise_for_status()
+                msg = res.json()["choices"][0]["message"]
+                return {
+                    "role": "assistant",
+                    "content": msg.get("content", ""),
+                    "thinking": "",
+                    "tool_calls": msg.get("tool_calls", []),
+                }
+        except Exception:
+            raise RuntimeError("Local SGLang request failed") from None
+
+    @staticmethod
     async def stream_chat(
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         system_prompt: str | None = None,
         provider: str | None = None,
     ) -> AsyncGenerator[str, None]:
         """Stream response tokens from the selected model provider."""
         selected_provider = provider or settings.model_provider
+        if selected_provider not in {"local-ollama", "local-sglang"}:
+            raise ValueError("Cloud inference is disabled; select a local provider")
+        validate_runtime(selected_provider)
+        if settings.expected_model_digest:
+            if selected_provider != settings.model_provider or not await model_ready():
+                raise RuntimeError("Pinned local model is unavailable or its digest changed")
 
         # Format prompt messages
         formatted_messages = []
@@ -77,76 +176,61 @@ class ModelAdapter:
         elif selected_provider == "local-sglang":
             async for token in ModelAdapter._stream_sglang(formatted_messages):
                 yield token
-        elif selected_provider == "deepseek":
-            async for token in ModelAdapter._stream_deepseek(formatted_messages):
-                yield token
-        else:
-            # Fallback mock/simulated generator if offline or during testing
-            yield f"[Archer on DGX Spark ({selected_provider})]: "
-            for word in ["Hello! ", "I am Archer, ", "your local AI assistant. ", "I am online and ready."]:
-                yield word
 
     @staticmethod
-    async def _stream_ollama(messages: list[dict[str, str]]) -> AsyncGenerator[str, None]:
+    async def _stream_ollama(messages: list[dict[str, Any]]) -> AsyncGenerator[str, None]:
         url = f"{settings.ollama_base_url}/api/chat"
         payload = {
             "model": settings.ollama_model,
             "messages": messages,
             "stream": True,
+            "options": {
+                "num_ctx": settings.ollama_num_ctx,
+                "temperature": settings.ollama_temperature,
+            },
         }
+        completed = False
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 async with client.stream("POST", url, json=payload) as response:
                     if response.status_code != 200:
-                        yield f"[Ollama Error: status {response.status_code}]"
-                        return
+                        raise RuntimeError("Local Ollama returned an error")
                     async for line in response.aiter_lines():
                         if line:
                             data = json.loads(line)
+                            if "error" in data:
+                                raise RuntimeError("Local Ollama stream returned an error")
                             msg = data.get("message", {})
                             content = msg.get("content", "")
                             if content:
                                 yield content
-                            if data.get("done", False):
+                            if data.get("done") is True:
+                                completed = True
                                 break
-        except Exception as e:
-            logger.error(f"Error streaming from Ollama: {e}")
-            yield f"[Archer Ollama Connection Error: {e}]"
+                    if not completed:
+                        raise RuntimeError("Local Ollama stream ended before completion")
+        except Exception:
+            raise RuntimeError("Local Ollama stream failed") from None
 
     @staticmethod
     async def _stream_sglang(messages: list[dict[str, str]]) -> AsyncGenerator[str, None]:
-        # Quick check if SGLang is currently live or switching
-        status_url = "http://127.0.0.1:8080/admin/status"
-        try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
-                res = await client.get(status_url)
-                if res.status_code == 200:
-                    status_data = res.json()
-                    live = status_data.get("live")
-                    switching = status_data.get("switching")
-                    if switching:
-                        yield f"[SGLang model '{switching}' is currently warming up into GPU VRAM (elapsed: {status_data.get('elapsed')}s). Please wait a moment...]\n\n"
-                    elif live is None:
-                        yield f"[Notice: SGLang models on Spark are currently cold / idle. You can pre-warm '{settings.sglang_model}' using `llm-warmup` in your terminal, or toggle ARCHER_MODEL_PROVIDER=local-ollama in .env for immediate local responses with Gemma 4.]\n\n"
-        except Exception:
-            pass
-
         url = f"{settings.sglang_base_url}/chat/completions"
         payload = {
             "model": settings.sglang_model,
             "messages": messages,
             "stream": True,
         }
+        completed = False
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 async with client.stream("POST", url, json=payload) as response:
                     if response.status_code != 200:
-                        yield f"[SGLang status {response.status_code}: backend not ready. Run `llm-warmup {settings.sglang_model}` or use Ollama.]"
-                        return
+                        raise RuntimeError("Local SGLang returned an error")
                     async for line in response.aiter_lines():
                         if line.startswith("data: "):
                             raw = line[6:].strip()
                             if raw == "[DONE]":
+                                completed = True
                                 break
                             data = json.loads(raw)
                             choices = data.get("choices", [])
@@ -154,9 +238,10 @@ class ModelAdapter:
                                 content = choices[0]["delta"].get("content", "")
                                 if content:
                                     yield content
-        except Exception as e:
-            logger.error(f"Error streaming from SGLang: {e}")
-            yield f"[Archer SGLang Connection Error: {e}]"
+                    if not completed:
+                        raise RuntimeError("Local SGLang stream ended before completion")
+        except Exception:
+            raise RuntimeError("Local SGLang stream failed") from None
 
     @staticmethod
     async def _stream_deepseek(messages: list[dict[str, str]]) -> AsyncGenerator[str, None]:

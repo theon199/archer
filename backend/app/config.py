@@ -13,6 +13,12 @@ class Settings(BaseSettings):
     secret_key: str = "dev-secret-key-archer-dgx-spark"
     data_dir: Path = Path(__file__).resolve().parent.parent.parent / "data"
 
+    run_timeout_seconds: float = 180.0
+    mcp_config_path: Path | None = None
+    static_dir: Path | None = None
+    expected_model_digest: str = ""
+    tools_default_enabled: bool = True
+
     # SQLite Database
     @property
     def database_path(self) -> Path:
@@ -25,6 +31,8 @@ class Settings(BaseSettings):
     # Local Ollama on Spark
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "gemma4:26b"
+    ollama_num_ctx: int = 4096
+    ollama_temperature: float = 0.7
 
     # Local SGLang Router on Spark
     sglang_base_url: str = "http://localhost:8080/v1"
@@ -42,6 +50,7 @@ class Settings(BaseSettings):
 
     # Plugins
     brave_search_api_key: str = ""
+    tavily_api_key_file: Path | None = None
     approved_files_root: Path = Path(__file__).resolve().parent.parent.parent / "data" / "approved_files"
 
     model_config = SettingsConfigDict(

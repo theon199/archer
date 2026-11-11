@@ -1,5 +1,7 @@
 # Archer: Research and Implementation Plan
 
+**V1 scope update:** The owner chose a single-user application with private remote access. The [current V1 to-do list](docs/v1-todo.md) supersedes this original plan's references to invited users and a public HTTPS hostname. Authentication and permission enforcement remain required; multi-user onboarding is future scope.
+
 ## Executive recommendation
 
 **Build Archer in three phases: V1 Safety, V2 Target, and V3 Reach. Start with V1.**

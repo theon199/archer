@@ -1,0 +1,27 @@
+[Unit]
+Description=Archer V1 private native application
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/archer/build/release-v1-markdown-20261108/backend
+UMask=0077
+Environment=ARCHER_ENV=production
+Environment=ARCHER_HOST=127.0.0.1
+Environment=ARCHER_PORT=8000
+Environment=ARCHER_DATA_DIR=%h/.local/share/archer-v1/data
+Environment=ARCHER_APPROVED_FILES_ROOT=%h/.local/share/archer-v1/approved-files
+Environment=ARCHER_MCP_CONFIG_PATH=%h/.config/archer/mcp.json
+Environment=ARCHER_TAVILY_API_KEY_FILE=%h/.config/archer/tavily-api-key
+Environment=ARCHER_STATIC_DIR=%h/archer/build/release-v1-markdown-20261108/frontend/dist
+Environment=ARCHER_MODEL_PROVIDER=local-ollama
+Environment=ARCHER_OLLAMA_BASE_URL=http://127.0.0.1:11434
+Environment=ARCHER_OLLAMA_MODEL=gemma4:26b
+Environment=ARCHER_OLLAMA_NUM_CTX=4096
+Environment=ARCHER_EXPECTED_MODEL_DIGEST=08ae7ec1744bd7f451c4a530afb39d2673ad9d07a8369b8a33a3613b41212a68
+ExecStart=/usr/bin/python3 %h/archer/build/release-v1-markdown-20261108/bin/with-sqlite-runtime.py --runtime %h/archer/build/release-v1-markdown-20261108/runtime/sqlite -- %h/archer/build/release-v1-markdown-20261108/backend/.venv/bin/python -m app.serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

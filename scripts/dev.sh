@@ -11,8 +11,10 @@ cleanup() {
     echo ""
     echo "Stopping Archer services..."
     kill "$BACKEND_PID" 2>/dev/null || true
+    kill "${WORKER_PID:-}" 2>/dev/null || true
     kill "$FRONTEND_PID" 2>/dev/null || true
     wait "$BACKEND_PID" 2>/dev/null || true
+    wait "${WORKER_PID:-}" 2>/dev/null || true
     wait "$FRONTEND_PID" 2>/dev/null || true
     echo "Archer stopped."
 }
@@ -22,21 +24,24 @@ trap cleanup SIGINT SIGTERM EXIT
 # Start Backend
 echo "-> Starting Backend on http://127.0.0.1:8000..."
 cd "$ARCHER_DIR/backend"
-uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 &
+uv run --locked uvicorn app.main:app --reload --host 127.0.0.1 --port 8000 &
 BACKEND_PID=$!
+
+uv run --locked python -m app.runs.worker &
+WORKER_PID=$!
 
 # Start Frontend
 echo "-> Starting Frontend on http://127.0.0.1:5173..."
 cd "$ARCHER_DIR/frontend"
-pnpm dev --host 0.0.0.0 --port 5173 &
+pnpm dev --host 127.0.0.1 --port 5173 &
 FRONTEND_PID=$!
 
 echo ""
 echo "Archer is live:"
-echo "  Frontend: http://localhost:5173 (or via Tailscale: http://$(hostname -I | awk '{print $1}'):5173)"
+echo "  Frontend: http://127.0.0.1:5173 (private loopback only)"
 echo "  Backend:  http://localhost:8000"
 echo "  Docs:     http://localhost:8000/docs"
 echo ""
-echo "Press Ctrl+C to shut down both servers."
+echo "Press Ctrl+C to shut down the application, worker and frontend."
 
 wait
